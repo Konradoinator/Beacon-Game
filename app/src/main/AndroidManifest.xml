@@ -23,7 +23,9 @@
 
     <application
         android:allowBackup="true"
-        android:label="Tajemnica Alchemika"
+        android:icon="@drawable/app_logo"
+        android:roundIcon="@drawable/app_logo"
+        android:label="@string/app_name"
         android:supportsRtl="true"
         android:theme="@android:style/Theme.Material.Light.NoActionBar">
         <activity

@@ -132,7 +132,8 @@ class IBeaconScanner(
     private fun estimateDistance(rssi: Int, txPower: Int): Double {
         if (rssi == 0) return -1.0
         val calibratedTx = if (txPower == 0) -59 else txPower
-        return 10.0.pow((calibratedTx - rssi) / (10.0 * 2.0))
+        // Wyznacznik tłumienia sygnału w pomieszczeniach (n = 2.6)
+        return 10.0.pow((calibratedTx - rssi) / (10.0 * 2.6))
     }
 }
 
@@ -143,32 +144,36 @@ class IBeaconScanner(
 class QuestViewModel : ViewModel() {
 
     private val requiredUuidFilter: String? = null
-    private val unlockDistanceThreshold = 2.0
+    private val unlockDistanceThreshold = 1.3
+    private val requiredProximityHits = 3
+
+    private var smoothedDistance: Double? = null
+    private var proximityHitCount = 0
 
     val stages = listOf(
         StoryStage(
             stepIndex = 0,
-            title = "Etap 1: Strażnik Czasu",
-            targetMajor = 1,
-            targetMinor = 1,
-            hintToFind = "Wskazówka: Szukaj tam, gdzie wskazówki płyną nieustannie, a stary mechanizm odmierza kolejne godziny w głównym holu.",
-            unlockedStoryText = "Za tarczą starego zegara znajdujesz zakurzoną kopertę! Napis głosi:\n\n\"Dobrze zacząłeś, wędrowcze. Moja receptura na Eliksir Światła została podzielona na trzy części. Pierwszą już masz: to Kropla Rosy. Aby poznać drugą, udaj się tam, gdzie spoczywa wiedza...\""
+            title = "Etap 1: Sad Jabłoni",
+            targetMajor = 2,
+            targetMinor = 3,
+            hintToFind = "Wskazówka: Udaj się ku biurku dziekana. Szukaj tam, gdzie wznosi się srebrzyste zwierciadło iMac o srebrnym tyle, a obok spoczywa pilot władający światłem projektora.",
+            unlockedStoryText = "Odkryłeś najważniejsze i najbardziej majestatyczne miejsce na całej uczelni – absolutny tron Wspaniałego Dziekana!\n\nTo stąd bije blask niezmąconej mądrości, niepodważalnej sprawiedliwości i legendarnej charyzmy. Jeden podpis Dziekana potrafi uciszyć burze i cofnąć czas przed najcięższą sesją, a jego obecność budzi podziw w każdym zakątku akademickich murów."
         ),
         StoryStage(
             stepIndex = 1,
-            title = "Etap 2: Szept Pergaminu",
-            targetMajor = 1,
-            targetMinor = 2,
-            hintToFind = "Wskazówka: Udaj się do miejsca pełnego książek. Szukaj na najniższej półce w pobliżu zielonego fotela.",
-            unlockedStoryText = "Pomiędzy stronami starego zielnika wypada mosiężny kluczyk i kolejna notatka:\n\n\"Drugi składnik to Liść Srebrzystej Paproci. Został Ci już tylko ostatni krok. Ukryłem sam eliksir w miejscu, gdzie ogień niegdyś dawał ciepło domownikom.\""
+            title = "Etap 2: Koło nad kołami",
+            targetMajor = 2,
+            targetMinor = 4,
+            hintToFind = "Wskazówka: Wyjdź za drzwi tej sali i spójrz w lewo. Za przeszkloną ścianą leży królestwo Koła Naukowego Informatyków, gdzie drukarki 3D i cyna tworzą własny ekosystem!",
+            unlockedStoryText = "Wkraczasz do legendarnej siedziby Koła Naukowego Informatyków!\n\nTo jedyne miejsce na uczelni, gdzie miniaturowa makieta sąsiaduje z plątaniną kabli, klockami LEGO i armią tajemniczych artefaktów niewiadomego pochodzenia."
         ),
         StoryStage(
             stepIndex = 2,
-            title = "Etap 3: Serce Płomienia",
-            targetMajor = 1,
-            targetMinor = 3,
-            hintToFind = "Wskazówka: Zbadaj stary kominek lub miejsce przy głównym piecu. Zwróć uwagę na lewą wnękę.",
-            unlockedStoryText = "Mosiężny kluczyk idealnie pasuje do ukrytej skrytki w cegle! Wyciągasz z niej fiolkę, która zaczyna delikatnie lśnić w obiektywie Twojej kamery. Tajemnica Alchemika została rozwiązana!"
+            title = "Etap 3: Sala wykładów",
+            targetMajor = 2,
+            targetMinor = 2,
+            hintToFind = "Wskazówka: Udaj się na sam przeciwny koniec korytarza. Za szklanymi drzwiami, po prawej stronie, leży wielka sala wykładowa!",
+            unlockedStoryText = "Dotarłeś do legendarnej sali wykładowej – świątyni studenckiego cierpienia i walki o przetrwanie!\n\nTo tutaj o 8:00 rano rozgrywa się wieczny dramat: nierówna walka ze sennością, rozpaczliwa próba zrozumienia slajdu numer 147 oraz ciche modlitwy do boga zaliczeń. Ściany tej sali pamiętają łzy wylewane przed kolokwium, ciężkie westchnienia na egzaminach i litry wypitej kawy z automatu."
         )
     )
 
@@ -187,6 +192,8 @@ class QuestViewModel : ViewModel() {
     fun startGame() {
         _currentStageIndex.value = 0
         _targetBeaconDistance.value = null
+        smoothedDistance = null
+        proximityHitCount = 0
         _gameStatus.value = GameStatus.SEARCHING
     }
 
@@ -200,10 +207,23 @@ class QuestViewModel : ViewModel() {
         val currentStage = stages[_currentStageIndex.value]
 
         if (beacon.major == currentStage.targetMajor && beacon.minor == currentStage.targetMinor) {
-            _targetBeaconDistance.value = beacon.distanceMeters
+            val alpha = 0.25
+            val currentSmoothed = smoothedDistance
+            val newSmoothed = if (currentSmoothed == null) {
+                beacon.distanceMeters
+            } else {
+                alpha * beacon.distanceMeters + (1.0 - alpha) * currentSmoothed
+            }
+            smoothedDistance = newSmoothed
+            _targetBeaconDistance.value = newSmoothed
 
-            if (beacon.distanceMeters in 0.0..unlockDistanceThreshold) {
-                _gameStatus.value = GameStatus.BEACON_FOUND_DIALOG
+            if (newSmoothed in 0.0..unlockDistanceThreshold) {
+                proximityHitCount++
+                if (proximityHitCount >= requiredProximityHits) {
+                    _gameStatus.value = GameStatus.BEACON_FOUND_DIALOG
+                }
+            } else {
+                proximityHitCount = 0
             }
         } else {
             _closestOtherBeacon.value = beacon
@@ -214,6 +234,8 @@ class QuestViewModel : ViewModel() {
         val nextIndex = _currentStageIndex.value + 1
         _targetBeaconDistance.value = null
         _closestOtherBeacon.value = null
+        smoothedDistance = null
+        proximityHitCount = 0
 
         if (nextIndex < stages.size) {
             _currentStageIndex.value = nextIndex
@@ -462,8 +484,8 @@ fun TopHudOverlay(
 
         val (statusText, statusColor) = when {
             distance == null -> "Skanowanie eteru... (Szukam Major: ${stage.targetMajor}, Minor: ${stage.targetMinor})" to Color.Gray
-            distance < 2.0 -> "GORĄCO! Sygnał tuż obok (${String.format("%.1f", distance)} m)" to Color(0xFF00E676)
-            distance < 5.0 -> "CIEPŁO! Jesteś blisko (${String.format("%.1f", distance)} m)" to Color(0xFFFFD54F)
+            distance < 1.3 -> "GORĄCO! Sygnał tuż obok (${String.format("%.1f", distance)} m)" to Color(0xFF00E676)
+            distance < 3.5 -> "CIEPŁO! Jesteś blisko (${String.format("%.1f", distance)} m)" to Color(0xFFFFD54F)
             else -> "ZIMNO. Wykryto słaby sygnał (${String.format("%.1f", distance)} m)" to Color(0xFF64B5F6)
         }
 
@@ -488,8 +510,8 @@ fun TopHudOverlay(
 fun ScannerReticleOverlay(distance: Double?, modifier: Modifier = Modifier) {
     val ringColor = when {
         distance == null -> Color.White.copy(alpha = 0.35f)
-        distance < 2.0 -> Color(0xFF00E676)
-        distance < 5.0 -> Color(0xFFFFD54F)
+        distance < 1.3 -> Color(0xFF00E676)
+        distance < 3.5 -> Color(0xFFFFD54F)
         else -> Color(0xFF64B5F6)
     }
 
@@ -521,14 +543,14 @@ fun IntroModal(onStart: () -> Unit) {
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             Text(
-                text = "Tajemnica Alchemika",
+                text = "Gdzie Ta Sala?",
                 fontSize = 24.sp,
                 fontWeight = FontWeight.ExtraBold,
                 color = Color(0xFF00E676)
             )
             Spacer(modifier = Modifier.height(12.dp))
             Text(
-                text = "Witaj w terenowej grze detektywistycznej!\n\nTwoim zadaniem jest odnalezienie ukrytych w okolicy artefaktów (nadajników iBeacon). Kieruj się wskazówkami na ekranie i obserwuj radar sygnału na tle obrazu z kamery.\n\nGdy podejdziesz do właściwego miejsca na mniej niż 2 metry, odblokujesz kolejny fragment historii!",
+                text = "Witaj w murach naszej Akademii!\n\nPrzed Tobą największe wyzwanie każdego studenta: opanowanie tajników nawigacji po korytarzach tej wspaniałej instytucji.\n\nKieruj się wskazówkami na ekranie i obserwuj radar sygnału iBeacon na tle obrazu z kamery. Gdy podejdziesz do celu na mniej niż 2 metry, odkryjesz tajemnicę kolejnego miejsca!",
                 color = Color.White,
                 textAlign = TextAlign.Center,
                 fontSize = 15.sp
@@ -538,7 +560,7 @@ fun IntroModal(onStart: () -> Unit) {
                 onClick = onStart,
                 modifier = Modifier.fillMaxWidth()
             ) {
-                Text("Rozpocznij Poszukiwania", color = Color.Black, fontWeight = FontWeight.Bold)
+                Text("Rozpocznij Eksplorację Akademii", color = Color.Black, fontWeight = FontWeight.Bold)
             }
         }
     }
@@ -614,16 +636,16 @@ fun VictoryModal(onRestart: () -> Unit) {
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             Text(
-                text = "GRATULACJE!",
-                fontSize = 28.sp,
+                text = "SUKCES AKADEMICKI!",
+                fontSize = 26.sp,
                 fontWeight = FontWeight.ExtraBold,
                 color = Color(0xFFFFD54F)
             )
             Spacer(modifier = Modifier.height(12.dp))
             Text(
-                text = "Ukończyłeś grę terenową pomyślnie!\n\nWszystkie trzy części receptury zostały zebrane, a Eliksir Światła znów lśni pełnym blaskiem. Jesteś prawdziwym mistrzem zmysłów i technologii.",
+                text = "Gratulacje, Studencie!\n\nPrzeszedłeś cały szlak i udowodniłeś, że już doskonale wiesz, jak poruszać się po tej wspaniałej instytucji!\n\nOd majestatycznego biurka Dziekana, przez szalone królestwo SKN KI, aż po samą salę wykładową – żaden korytarz ani sala nie stanowią już dla Ciebie zagadki.",
                 color = Color.White,
-                fontSize = 16.sp,
+                fontSize = 15.sp,
                 textAlign = TextAlign.Center
             )
             Spacer(modifier = Modifier.height(24.dp))
